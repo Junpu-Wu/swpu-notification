@@ -1,11 +1,11 @@
 # swpu-notification
 
-西南石油大学通知公告监测与手机推送。包含石油与天然气工程学院和研究生院两套独立监测程序，使用 Python 标准库定时读取网页，发现新公告后通过 Bark、ntfy 或 WxPusher 发送通知。
+西南石油大学通知公告监测与手机推送。包含石工院和研究生院两套独立监测程序，使用 Python 标准库定时读取网页，发现新公告后通过 Bark、ntfy 或 WxPusher 发送通知。
 
-| 目录 | 监测页面 | 文章分类 |
+| 目录 | 监测页面 |
 | --- | --- | --- |
-| `sgy/` | https://www.swpu.edu.cn/sgy/tzgg.htm | 石工院 1086 |
-| `gs/` | https://www.swpu.edu.cn/gs/tzgg.htm | 研究生院 1088 |
+| `sgy/` | https://www.swpu.edu.cn/sgy/tzgg.htm |
+| `gs/` | https://www.swpu.edu.cn/gs/tzgg.htm |
 
 ## 功能
 
