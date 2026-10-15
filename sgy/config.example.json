@@ -16,6 +16,13 @@
       "enabled": false,
       "server": "https://ntfy.sh",
       "topic_file": "/etc/swpu-notice-monitor/classmate-android.topic"
+    },
+    {
+      "id": "my-wxpusher",
+      "type": "wxpusher",
+      "enabled": false,
+      "server": "https://wxpusher.zjiecode.com",
+      "spt_file": "/path/to/private/my-wxpusher.spt"
     }
   ]
 }

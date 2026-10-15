@@ -14,4 +14,4 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run offline tests
         working-directory: ${{ matrix.monitor }}
-        run: python -m unittest -v test_monitor.py
+        run: python -m unittest discover -v -p 'test_*.py'

@@ -136,13 +136,15 @@ def load_config(path):
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", ident) or ident in ids:
                 raise MonitorError("invalid_or_duplicate_target_id")
             ids.add(ident)
-            if target["type"] not in ("bark", "ntfy"):
+            if target["type"] not in ("bark", "ntfy", "wxpusher"):
                 raise MonitorError("unsupported_push_type")
             if not https_url(target["server"]):
                 raise MonitorError("push_server_must_be_https_without_credentials")
             if target.get("enabled", False):
                 if target["type"] == "bark" and not target.get("key_file"):
                     raise MonitorError("bark_key_file_required")
+                if target["type"] == "wxpusher" and not target.get("spt_file"):
+                    raise MonitorError("wxpusher_spt_file_required")
                 if target["type"] == "ntfy" and not target.get("topic_file"):
                     raise MonitorError("ntfy_topic_file_required")
             if type(target.get("since", 0)) not in (int, float):
@@ -291,6 +293,14 @@ def send_push(target, notice, *, test=False):
         payload = {"device_key": key, "title": title, "body": body,
                    "url": notice.url, "group": "西南石油大学研究生院", "isArchive": "1"}
         endpoint = server + "/push"
+    elif target["type"] == "wxpusher":
+        spt = read_secret(target["spt_file"])
+        if not re.fullmatch(r"SPT_[A-Za-z0-9_-]{8,128}", spt):
+            raise MonitorError("invalid_wxpusher_spt")
+        payload = {"sptList": [spt], "summary": title + "：" + notice.title,
+                   "content": body + "\n原文：" + notice.url,
+                   "contentType": 1, "url": notice.url}
+        endpoint = server + "/api/send/message/simple-push"
     else:
         topic = read_secret(target["topic_file"])
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", topic):
@@ -308,6 +318,12 @@ def send_push(target, notice, *, test=False):
         raise MonitorError("push_invalid_json_response") from None
     if not isinstance(accepted, dict):
         raise MonitorError("push_invalid_response")
+    if target["type"] == "wxpusher":
+        if accepted.get("code") != 1000 or accepted.get("success") is False:
+            raise MonitorError("wxpusher_rejected_request")
+        results = accepted.get("data")
+        if isinstance(results, list) and any(isinstance(r, dict) and r.get("code", 1000) != 1000 for r in results):
+            raise MonitorError("wxpusher_recipient_rejected")
     if target["type"] == "bark" and accepted.get("code") != 200:
         raise MonitorError("bark_rejected_request")
     if target["type"] == "ntfy" and not (accepted.get("id") and accepted.get("event") == "message"):

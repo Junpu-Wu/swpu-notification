@@ -1,6 +1,6 @@
 # swpu-notification
 
-西南石油大学通知公告监测与手机推送。包含石油与天然气工程学院和研究生院两套独立监测程序，使用 Python 标准库定时读取网页，发现新公告后通过 Bark 或 ntfy 发送通知。
+西南石油大学通知公告监测与手机推送。包含石油与天然气工程学院和研究生院两套独立监测程序，使用 Python 标准库定时读取网页，发现新公告后通过 Bark、ntfy 或 WxPusher 发送通知。
 
 | 目录 | 监测页面 | 文章分类 |
 | --- | --- | --- |
@@ -86,3 +86,16 @@ python3 -m unittest -v test_monitor.py
 公告原文及附件属于学校或相应权利人，本仓库不包含学校公告全文或抓取数据库。请合理设置频率，并遵守学校网站访问要求。
 
 本仓库自身代码暂未指定开源许可证；第三方项目授权独立适用。需要公开分享或授予代码使用许可时，由仓库所有者决定许可证。
+
+## WxPusher 极简推送 SPT
+
+支持 [WxPusher SPT](https://wxpusher.zjiecode.com/docs/spt.html)，使用 POST JSON 接口，令牌保存在私有文件中，不放在请求 URL。
+
+把 SPT 或包含它的完整极简推送地址保存为权限 600 的临时输入文件后，在对应目录配置：
+
+```sh
+python3 configure.py --config config.json --id my-wxpusher --wxpusher-spt-stdin --future-only < wxpusher-spt.txt
+python3 monitor.py --config config.json --test-latest my-wxpusher
+```
+
+新通知包含来源、标题、日期、可点击的单篇原文链接。每个通道有独立投递与重试状态，开启 WxPusher 不会替换 Bark。SPT 需要像密码一样保密，不能上传到仓库。接口成功仅表示接受发送，手机实际收到需要另外确认。

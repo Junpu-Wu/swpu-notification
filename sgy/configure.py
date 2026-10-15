@@ -38,6 +38,7 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--bark-url-stdin", action="store_true")
     mode.add_argument("--ntfy-topic-stdin", action="store_true")
+    mode.add_argument("--wxpusher-spt-stdin", action="store_true")
     parser.add_argument("--ntfy-server", default="https://ntfy.sh")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.id):
@@ -62,6 +63,14 @@ def main():
             secret_path = config_path.parent / (args.id + ".key")
             target = {"id": args.id, "type": "bark", "enabled": True,
                       "server": "https://" + url.netloc, "key_file": str(secret_path)}
+        elif args.wxpusher_spt_stdin:
+            match = re.search(r"SPT_[A-Za-z0-9_-]{8,128}", raw)
+            if not match:
+                raise ValueError
+            key = match[0]
+            secret_path = config_path.parent / (args.id + ".spt")
+            target = {"id": args.id, "type": "wxpusher", "enabled": True,
+                      "server": "https://wxpusher.zjiecode.com", "spt_file": str(secret_path)}
         else:
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", raw):
                 raise ValueError

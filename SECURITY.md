@@ -1,6 +1,6 @@
 # 凭据与运行数据
 
-不要提交实际 config.json、Bark key、ntfy 主题及 token、Bark 测试地址、SQLite 数据库、日志、备份、SSH 文件或服务器管理信息。仓库提供 .gitignore，但发布前仍须检查 git diff --cached 及 git ls-files，不能仅依赖忽略规则。
+不要提交实际 config.json、Bark key、WxPusher SPT、ntfy 主题及 token、Bark 测试地址、SQLite 数据库、日志、备份、SSH 文件或服务器管理信息。仓库提供 .gitignore，但发布前仍须检查 git diff --cached 及 git ls-files，不能仅依赖忽略规则。
 
 凭据文件权限应为 600，状态目录建议 700。configure.py 的输入通过私有文件重定向到标准输入，避免 key 出现在进程参数中。配置副本也应保存在私有目录。
 

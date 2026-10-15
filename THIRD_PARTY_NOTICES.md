@@ -24,3 +24,10 @@
 ## Python
 
 本项目仅使用 Python 标准库。Python 本身的授权见 https://docs.python.org/3/license.html 。
+
+## WxPusher
+
+- 官方文档：https://wxpusher.zjiecode.com/docs/
+- 极简推送 SPT：https://wxpusher.zjiecode.com/docs/spt.html
+
+本项目调用 WxPusher 极简推送 HTTP API，未捆绑其客户端或服务端源码。消息送达及使用规则以平台说明为准。
