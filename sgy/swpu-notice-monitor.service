@@ -1,0 +1,28 @@
+[Unit]
+Description=SWPU college notice monitor (random 30-60 minute interval)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=swpu-monitor
+Group=swpu-monitor
+ExecStart=/usr/bin/python3 /opt/swpu-notice-monitor/monitor.py --config /etc/swpu-notice-monitor/config.json --state-dir /var/lib/swpu-notice-monitor
+Restart=on-failure
+RestartSec=30
+StateDirectory=swpu-notice-monitor
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

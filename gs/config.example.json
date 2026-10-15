@@ -1,0 +1,21 @@
+{
+  "page_url": "https://www.swpu.edu.cn/gs/tzgg.htm",
+  "interval_min_seconds": 1800,
+  "interval_max_seconds": 3600,
+  "targets": [
+    {
+      "id": "my-iphone",
+      "type": "bark",
+      "enabled": false,
+      "server": "https://api.day.app",
+      "key_file": "/home/your-user/.config/swpu-gs-notice-monitor/my-iphone.key"
+    },
+    {
+      "id": "classmate-android",
+      "type": "ntfy",
+      "enabled": false,
+      "server": "https://ntfy.sh",
+      "topic_file": "/home/your-user/.config/swpu-gs-notice-monitor/classmate-android.topic"
+    }
+  ]
+}
