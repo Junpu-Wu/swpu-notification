@@ -194,14 +194,17 @@ def http_read(url, *, data=None, headers=None, timeout=10):
     req = request.Request(url, data=data, headers=headers or {})
     with request.urlopen(req, timeout=timeout) as response:
         chunks, size = [], 0
-        sock = response.fp.raw._sock
+        sock = response.fp.raw._sock if response.fp is not None else None
         while True:
+            if response.isclosed() or response.length == 0:
+                return b"".join(chunks), response.headers.get_content_charset() or "utf-8"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise MonitorError("http_deadline_exceeded")
             # read1 makes one buffered/socket read; a keepalive stream cannot reset
             # the overall deadline with periodic whitespace.
-            sock.settimeout(remaining)
+            if sock is not None:
+                sock.settimeout(remaining)
             try:
                 chunk = response.read1(min(65536, 1024 * 1024 + 1 - size))
             except socket.timeout:

@@ -32,6 +32,13 @@ class BudgetHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass  # Client is expected to disconnect at its deadline.
+        elif self.path in ("/fixed-length", "/empty"):
+            body = b'{"code":200}' if self.path == "/fixed-length" else b""
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == "/oversized":
             body = b"x" * (1024 * 1024 + 1)
             self.send_response(200)
@@ -63,6 +70,11 @@ def local_server():
 
 
 class HttpBudgetTests(unittest.TestCase):
+    def test_fixed_length_and_empty_response_return_before_closed_socket(self):
+        with local_server() as base:
+            self.assertEqual(m.http_read(base + "/fixed-length")[0], b'{"code":200}')
+            self.assertEqual(m.http_read(base + "/empty")[0], b'')
+
     def test_periodic_chunked_whitespace_cannot_reset_total_deadline(self):
         with local_server() as base:
             started = time.monotonic()
