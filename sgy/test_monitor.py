@@ -31,6 +31,9 @@ def page(ids, next_page=None, jsp=False):
 
 class MonitorTests(unittest.TestCase):
     def setUp(self):
+        self.content_patch = patch.object(m, "prepare_content", return_value={"text": "模拟正文", "status": "fallback", "reason": "test", "images": 0})
+        self.content_patch.start()
+        self.addCleanup(self.content_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.db = m.connect(self.root / "state.sqlite3")
@@ -99,7 +102,7 @@ class MonitorTests(unittest.TestCase):
         m.ingest(self.db, self.rows([100]), baseline=True)
         m.ingest(self.db, self.rows([101]))
         targets = [{"id": "me"}, {"id": "friend"}]
-        def send(target, _):
+        def send(target, _, **kwargs):
             if target["id"] == "me":
                 raise TimeoutError("secret-must-not-appear")
         logs = io.StringIO()

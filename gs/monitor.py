@@ -12,11 +12,13 @@ import random
 import re
 import signal
 import sqlite3
+import socket
 import threading
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib import error, parse, request
+from ai_content import validate_ai_config, prepare_content, render_body
 
 LOG = logging.getLogger("swpu-gs-monitor")
 RNG = random.SystemRandom()
@@ -149,6 +151,12 @@ def load_config(path):
                     raise MonitorError("ntfy_topic_file_required")
             if type(target.get("since", 0)) not in (int, float):
                 raise MonitorError("target_since_must_be_unix_timestamp")
+        allowlist = cfg.get("delivery_allowlist")
+        if allowlist is not None:
+            if (not isinstance(allowlist, list) or any(not isinstance(i, str) for i in allowlist)
+                    or len(set(allowlist)) != len(allowlist) or not set(allowlist) <= ids):
+                raise MonitorError("invalid_delivery_allowlist")
+        validate_ai_config(cfg)
         return cfg
     except MonitorError:
         raise
@@ -182,12 +190,28 @@ def read_secret(path):
 
 
 def http_read(url, *, data=None, headers=None, timeout=10):
+    deadline = time.monotonic() + timeout
     req = request.Request(url, data=data, headers=headers or {})
     with request.urlopen(req, timeout=timeout) as response:
-        body = response.read(1024 * 1024 + 1)
-        if len(body) > 1024 * 1024:
-            raise MonitorError("response_too_large")
-        return body, response.headers.get_content_charset() or "utf-8"
+        chunks, size = [], 0
+        sock = response.fp.raw._sock
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MonitorError("http_deadline_exceeded")
+            # read1 makes one buffered/socket read; a keepalive stream cannot reset
+            # the overall deadline with periodic whitespace.
+            sock.settimeout(remaining)
+            try:
+                chunk = response.read1(min(65536, 1024 * 1024 + 1 - size))
+            except socket.timeout:
+                raise MonitorError("http_deadline_exceeded") from None
+            size += len(chunk)
+            if size > 1024 * 1024:
+                raise MonitorError("response_too_large")
+            if not chunk:
+                return b"".join(chunks), response.headers.get_content_charset() or "utf-8"
+            chunks.append(chunk)
 
 
 def fetch_page(url, timeout=10):
@@ -277,15 +301,25 @@ def poll(con):
         set_meta(con, "last_error", "")
 
 
-def send_push(target, notice, *, test=False):
+def restrict_targets(targets, cfg):
+    allowlist = cfg.get("delivery_allowlist")
+    return [t for t in targets if allowlist is None or t["id"] in allowlist]
+
+
+def allowed_targets(cfg):
+    return restrict_targets([t for t in cfg.get("targets", []) if t.get("enabled", False)], cfg)
+
+
+def send_push(target, notice, *, test=False, content=None, cfg=None):
+    # Enforce the trial scope even when a caller bypasses the queue or CLI.
+    if cfg is not None and not restrict_targets([target], cfg):
+        raise MonitorError("target_excluded_by_delivery_allowlist")
     title = "通知监测测试" if test else "研究生院新通知"
     if test and notice.title:
-        title = "文章直达测试"
-        body = "已有通知的链接测试：\n" + notice.title + "\n发布日期：" + notice.date
-    elif test:
-        body = "这是一条测试通知，点击可打开研究生院通知页。"
-    else:
-        body = notice.title + "\n发布日期：" + notice.date
+        title = "AI内容测试·研究生院" if cfg and cfg.get("ai", {}).get("enabled") else "文章直达测试"
+    if content is None:
+        content = {"text": "正文请查看原文。" if notice.title else "这是一条通知通道测试。", "images": 0}
+    body = render_body(notice, content)
     headers = {"Content-Type": "application/json; charset=utf-8"}
     server = target["server"].rstrip("/")
     if target["type"] == "bark":
@@ -298,7 +332,7 @@ def send_push(target, notice, *, test=False):
         if not re.fullmatch(r"SPT_[A-Za-z0-9_-]{8,128}", spt):
             raise MonitorError("invalid_wxpusher_spt")
         payload = {"sptList": [spt], "summary": title + "：" + notice.title,
-                   "content": body + "\n原文：" + notice.url,
+                   "content": body,
                    "contentType": 1, "url": notice.url}
         endpoint = server + "/api/send/message/simple-push"
     else:
@@ -310,8 +344,23 @@ def send_push(target, notice, *, test=False):
         endpoint = server + "/"
         if target.get("token_file"):
             headers["Authorization"] = "Bearer " + read_secret(target["token_file"])
-    response, _ = http_read(endpoint, data=json.dumps(payload, ensure_ascii=False).encode(),
-                            headers=headers, timeout=10)
+    # Reserve space for Bark's APNs wrapper. Measure escaped JSON, not characters.
+    body_field = {"bark": "body", "ntfy": "message", "wxpusher": "content"}[target["type"]]
+    limit = 3500 if target["type"] in ("bark", "ntfy") else 39000
+    metadata = dict(payload, **{body_field: ""})
+    budget = min(len(body.encode("utf-8")), limit - len(json.dumps(metadata, ensure_ascii=False).encode()) - 128)
+    encoded = json.dumps(payload, ensure_ascii=False).encode()
+    while len(encoded) > limit:
+        if budget <= 0:
+            raise MonitorError("push_payload_exceeds_limit")
+        try:
+            payload[body_field] = render_body(notice, content, max_bytes=budget)
+        except ValueError:
+            raise MonitorError("push_footer_exceeds_limit") from None
+        encoded = json.dumps(payload, ensure_ascii=False).encode()
+        if len(encoded) > limit:
+            budget -= max(32, len(encoded) - limit)
+    response, _ = http_read(endpoint, data=encoded, headers=headers, timeout=10)
     try:
         accepted = json.loads(response)
     except (ValueError, UnicodeError):
@@ -339,6 +388,7 @@ def queue_targets(con, targets):
 
 
 def deliver_one(con, targets, cfg):
+    targets = restrict_targets(targets, cfg)
     queue_targets(con, targets)
     by_id = {t["id"]: t for t in targets}
     if not by_id:
@@ -346,13 +396,16 @@ def deliver_one(con, targets, cfg):
     marks = ",".join("?" for _ in by_id)
     row = con.execute("""SELECT d.*,n.title,n.date,n.url FROM deliveries d
         JOIN notices n USING(uid) WHERE d.state='pending' AND d.next_attempt<=?
-        AND d.target IN (""" + marks + ") ORDER BY d.next_attempt,n.first_seen LIMIT 1",
-        (time.time(), *by_id)).fetchone()
+        AND d.target IN (""" + marks + ") AND (" + " OR ".join(
+            "(d.target=? AND n.first_seen>=?)" for _ in by_id) + ") ORDER BY d.next_attempt,n.first_seen LIMIT 1",
+        (time.time(), *by_id, *(value for t in by_id.values() for value in (t["id"], t.get("since", 0))))).fetchone()
     if row is None:
         return False
     n = Notice(row["uid"], row["title"], row["date"], row["url"])
     try:
-        send_push(by_id[row["target"]], n)
+        content = prepare_content(con, n, cfg, http_read, read_secret)
+        LOG.info("article_content article=%s mode=%s reason=%s", n.uid, content["status"], content["reason"])
+        send_push(by_id[row["target"]], n, cfg=cfg, content=content)
     except Exception as exc:
         code = safe_error(exc)
         with con:
@@ -374,7 +427,7 @@ def delivery_worker(config_path, db_path, stop):
         while not stop.is_set():
             try:
                 cfg = load_config(config_path)
-                targets = [t for t in cfg.get("targets", []) if t.get("enabled", False)]
+                targets = allowed_targets(cfg)
                 active = deliver_one(con, targets, cfg)
             except Exception as exc:
                 LOG.error("delivery_worker_error reason=%s", safe_error(exc))
@@ -389,6 +442,9 @@ def status(db_path, cfg):
         result = {"initialized": meta(con, "baseline_at") is not None,
                   "interval_seconds": [cfg["interval_min_seconds"], cfg["interval_max_seconds"]],
                   "enabled_targets": [t["id"] for t in cfg.get("targets", []) if t.get("enabled", False)],
+                  "active_delivery_targets": [t["id"] for t in allowed_targets(cfg)],
+                  "ai_enabled": bool(cfg.get("ai", {}).get("enabled")),
+                  "ai_model": cfg.get("ai", {}).get("model") if cfg.get("ai", {}).get("enabled") else None,
                   "notice_count": con.execute("SELECT count(*) FROM notices").fetchone()[0],
                   "new_notice_count": con.execute("SELECT count(*) FROM notices WHERE is_new=1").fetchone()[0],
                   "deliveries": {r[0]: r[1] for r in con.execute("SELECT state,count(*) FROM deliveries GROUP BY state")}}
@@ -422,13 +478,18 @@ def main():
             return 0
         if args.test_push or args.test_latest:
             selected_target = args.test_push or args.test_latest
-            targets = [t for t in cfg.get("targets", []) if t.get("enabled", False)
-                       and selected_target in ("all", t["id"])]
+            targets = [t for t in allowed_targets(cfg) if selected_target in ("all", t["id"])]
             if not targets:
                 raise MonitorError("no_matching_enabled_target")
             notice = fetch_page(PAGE_URL)[0][0] if args.test_latest else Notice("test", "", "", PAGE_URL)
+            content = None
+            if args.test_latest:
+                Path(args.state_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
+                with contextlib.closing(connect(db_path)) as con:
+                    content = prepare_content(con, notice, cfg, http_read, read_secret)
+                LOG.info("test_article_content article=%s mode=%s reason=%s", notice.uid, content["status"], content["reason"])
             for target in targets:
-                send_push(target, notice, test=True)
+                send_push(target, notice, test=True, cfg=cfg, content=content)
                 LOG.info("test_push_accepted target=%s article=%s", target["id"], notice.uid)
             return 0
         Path(args.state_dir).mkdir(parents=True, exist_ok=True, mode=0o700)

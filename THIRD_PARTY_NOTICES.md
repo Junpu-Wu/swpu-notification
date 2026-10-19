@@ -31,3 +31,11 @@
 - 极简推送 SPT：https://wxpusher.zjiecode.com/docs/spt.html
 
 本项目调用 WxPusher 极简推送 HTTP API，未捆绑其客户端或服务端源码。消息送达及使用规则以平台说明为准。
+
+## DeepSeek
+
+- 官方 API 文档：https://api-docs.deepseek.com/
+- JSON 模式：https://api-docs.deepseek.com/guides/json_mode/
+- 模型与价格：https://api-docs.deepseek.com/quick_start/pricing/
+
+本项目可选调用 DeepSeek 托管 API，使用 JSON 输出选择原文段落，未捆绑模型权重或 SDK。服务可用性、数据处理、费用和使用规则以 DeepSeek 官方条款与说明为准；此处引用不构成对模型输出准确性的保证。

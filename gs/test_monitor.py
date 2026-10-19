@@ -70,7 +70,7 @@ class MonitorTests(unittest.TestCase):
                 monitor.ingest(con, [old], baseline=True)
                 monitor.ingest(con, [new])
                 started = time.time()
-                with mock.patch.object(monitor, "send_push", side_effect=OSError("offline")):
+                with mock.patch.object(monitor, "prepare_content", return_value={"text": "模拟正文", "status": "fallback", "reason": "test", "images": 0}), mock.patch.object(monitor, "send_push", side_effect=OSError("offline")):
                     self.assertTrue(monitor.deliver_one(con, [target], cfg))
                 row = con.execute("SELECT state,attempts,last_error,next_attempt FROM deliveries").fetchone()
                 self.assertEqual((row[0], row[1], row[2]), ("pending", 1, "OSError"))
