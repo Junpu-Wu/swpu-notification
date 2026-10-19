@@ -6,7 +6,7 @@ import time
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
-PROMPT_VERSION = "source-blocks-2"
+PROMPT_VERSION = "source-blocks-3"
 API_URL = "https://api.deepseek.com/chat/completions"
 FOOTER = "内容含AI处理，请关注原文。"
 
@@ -46,6 +46,8 @@ class ArticleParser(HTMLParser):
     def flush(self):
         text = re.sub(r"[ \t\r\f\v]+", " ", "".join(self.parts)).strip()
         self.parts = []
+        if self.row_depth is not None:
+            text = re.sub(r"\s+", " ", text).strip()
         if text:
             self.blocks.append(text)
 

@@ -165,6 +165,7 @@ class ContentTests(unittest.TestCase):
         self.assertIn("乙", blocks[1])
         self.assertIn(" | ", blocks[1])
         self.assertIn("2", blocks[1])
+        self.assertEqual(blocks[1], "甲 乙 | 2")
 
     def test_config_validation(self):
         m.validate_ai_config({})
