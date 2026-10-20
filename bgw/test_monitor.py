@@ -213,8 +213,9 @@ class MonitorTests(unittest.TestCase):
             monitor.send_push(target, notice, test=True, cfg={"ai": {"enabled": True}}, content={"text": "正文", "images": 0})
             payload = json.loads(call.call_args.kwargs["data"])
             self.assertEqual(payload["group"], "西南石油大学重要通知")
-            self.assertEqual(payload["title"], "AI内容测试·学校重要通知")
-            self.assertTrue(payload["body"].endswith("原文：" + notice.url + "\n内容含AI处理，请关注原文。"))
+            self.assertEqual(payload["title"], "学校重要通知")
+            self.assertTrue(payload["body"].endswith("点击通知查看原文。\n内容含AI处理，请关注原文。"))
+            self.assertNotIn(notice.url, payload["body"])
 
 
 if __name__ == "__main__":

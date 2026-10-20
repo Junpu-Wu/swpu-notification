@@ -132,7 +132,8 @@ class ContentTests(unittest.TestCase):
         self.assertLessEqual(len(result.encode()), 800)
         self.assertIn("正文已节选", result)
         self.assertIn("图片内容未识别", result)
-        self.assertIn("原文：" + self.notice.url, result)
+        self.assertNotIn(self.notice.url, result)
+        self.assertIn("点击通知查看原文。", result)
         self.assertTrue(result.endswith(m.FOOTER))
         self.assertNotIn("�", result)
         with self.assertRaises(ValueError):
@@ -166,6 +167,48 @@ class ContentTests(unittest.TestCase):
         self.assertIn(" | ", blocks[1])
         self.assertIn("2", blocks[1])
         self.assertEqual(blocks[1], "甲 乙 | 2")
+
+    def test_display_removes_multiple_links_but_preserves_labels_contacts_and_dates(self):
+        text = ("原文：" + self.notice.url + "\n重复：" + self.notice.url + "\n"
+                "附件一：https://www.swpu.edu.cn/download/通知.pdf\n"
+                "[附件二](https://example.com/b.docx)\n"
+                '<a href="https://example.com/c.xlsx">附件三</a>\n'
+                "参阅www.example.com/a.htm联系人张三，截止2026年10月30日。\n"
+                "邮箱：office@example.com 电话：13800138000\n"
+                "<https://例子.测试/说明>。")
+        self.notice.title = "测试通知 https://example.com/title.htm"
+        result = m.render_body(self.notice, {"text": text, "images": 0})
+        for prefix in ("http://", "https://", "www."):
+            self.assertNotIn(prefix, result.lower())
+        for value in ("附件一", "附件二", "附件三", "联系人张三", "2026年10月30日", "office@example.com", "13800138000"):
+            self.assertIn(value, result)
+        self.assertIn("链接与附件请在原文查看", result)
+        self.assertTrue(result.endswith("点击通知查看原文。\n" + m.FOOTER))
+        self.assertEqual(result.count(m.FOOTER), 1)
+
+    def test_bare_unicode_urls_and_adjacent_prose_remain_safe(self):
+        for original, retained in (
+                ("见https://example.com/a.htm张三于2026-10-30提交", "张三于2026-10-30提交"),
+                ("见https://example.com/通知.pdf李四电话13800138000", "李四电话13800138000"),
+                ("见https://例子.测试/通知.pdf王五10月30日提交", "王五10月30日提交"),
+                ("见https://www.学校.cn/通知.pdf王五负责", "王五负责"),
+                ("网址https://example.com张三负责", "张三负责"),
+                ("网址www.example.com截止2026年10月30日", "截止2026年10月30日")):
+            with self.subTest(original=original):
+                result = m.render_body(self.notice, {"text": original, "images": 0})
+                self.assertIn(retained, result)
+                self.assertNotIn("https://", result)
+                self.assertNotIn("www.", result)
+
+    def test_display_cleanup_applies_to_cached_text_without_mutating_cache(self):
+        content = {"text": "附件一：" + self.notice.url + "\n处理日期2026-10-20", "images": 0, "status": "ai"}
+        original = content.copy()
+        first = m.render_body(self.notice, content)
+        second = m.render_body(self.notice, content)
+        self.assertEqual(content, original)
+        self.assertEqual(first, second)
+        self.assertNotIn(self.notice.url, first)
+        self.assertIn("处理日期2026-10-20", first)
 
     def test_config_validation(self):
         m.validate_ai_config({})

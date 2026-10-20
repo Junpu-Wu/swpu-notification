@@ -315,9 +315,8 @@ def send_push(target, notice, *, test=False, content=None, cfg=None):
     # Enforce the trial scope even when a caller bypasses the queue or CLI.
     if cfg is not None and not restrict_targets([target], cfg):
         raise MonitorError("target_excluded_by_delivery_allowlist")
-    title = "通知监测测试" if test else "石工院新通知"
-    if test and notice.title:
-        title = "AI内容测试·石工院" if cfg and cfg.get("ai", {}).get("enabled") else "文章直达测试"
+    # Test deliveries use the same source title as regular notifications.
+    title = "石工院新通知"
     if content is None:
         content = {"text": "正文请查看原文。" if notice.title else "这是一条通知通道测试。", "images": 0}
     body = render_body(notice, content)
@@ -332,7 +331,7 @@ def send_push(target, notice, *, test=False, content=None, cfg=None):
         spt = read_secret(target["spt_file"])
         if not re.fullmatch(r"SPT_[A-Za-z0-9_-]{8,128}", spt):
             raise MonitorError("invalid_wxpusher_spt")
-        payload = {"sptList": [spt], "summary": title + "：" + notice.title,
+        payload = {"sptList": [spt], "summary": title,
                    "content": body,
                    "contentType": 1, "url": notice.url}
         endpoint = server + "/api/send/message/simple-push"

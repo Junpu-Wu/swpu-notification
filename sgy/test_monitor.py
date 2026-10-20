@@ -167,7 +167,7 @@ class PushTransportTests(unittest.TestCase):
                         self.assertEqual(payload["url" if provider == "bark" else "click"], n.url)
                         self.assertNotEqual(n.url, m.PAGE_URL)
                         self.assertIn(n.title, payload["body" if provider == "bark" else "message"])
-                        self.assertEqual(payload["title"], "文章直达测试" if test else "石工院新通知")
+                        self.assertEqual(payload["title"], "石工院新通知")
 
     def test_bark_and_ntfy_payloads_over_http(self):
         received = []

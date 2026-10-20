@@ -211,13 +211,79 @@ def prepare_content(con, notice, cfg, http_read, read_secret):
     return result
 
 
+def remove_web_urls(text):
+    """Remove displayed web addresses, retaining labels and adjacent prose.
+
+    Unenclosed Unicode paths are ambiguous beside Chinese prose. Keep that
+    trailing text when no file extension establishes the URL boundary rather
+    than deleting possible names or deadlines. It is no longer a web address.
+    """
+    changed = False
+
+    def labeled(match):
+        nonlocal changed
+        changed = True
+        return match.group(1)
+
+    # Sources are already plain text; these also handle literal link notation
+    # in cached article text without discarding its useful human label.
+    text = re.sub(r'<a\b[^>]*href\s*=\s*[\"\'](?:https?://|www\.)[^\"\']*[\"\'][^>]*>(.*?)</a\s*>', labeled, text, flags=re.I | re.S)
+    text = re.sub(r'!?\[([^]\n]*)\]\(\s*(?:https?://|www\.)[^)\n]*\)', labeled, text, flags=re.I)
+
+    def enclosed(match):
+        nonlocal changed
+        changed = True
+        return ""
+
+    text = re.sub(r'<(?:https?://|www\.)[^<>\n]+>', enclosed, text, flags=re.I)
+
+    def naked(match):
+        nonlocal changed
+        changed = True
+        token = match.group(0)
+        prefix = re.match(r'(?:https?://|www\.)', token, re.I).end()
+        remainder = token[prefix:]
+        # An ASCII hostname has a clear boundary before adjacent Chinese prose.
+        ascii_host = re.match(r'[A-Za-z0-9.-]+(?::[0-9]+)?', remainder)
+        if ascii_host and not ascii_host.group(0).endswith(".") and ascii_host.end() < len(remainder) and '\u4e00' <= remainder[ascii_host.end()] <= '\u9fff':
+            return remainder[ascii_host.end():]
+        host_end = re.search(r'[/#?]', remainder)
+        if host_end is None:
+            # Common internationalized TLDs provide a conservative boundary.
+            tld = re.search(r'\.(?:中国|中國|公司|网络|網絡|测试)(?=[\u4e00-\u9fff]|$)', remainder)
+            return remainder[tld.end():] if tld else ""
+        offset = prefix + host_end.start()
+        path = token[offset:]
+        file_end = re.search(r'\.(?:html?|pdf|docx?|xlsx?|pptx?|zip|rar|jpe?g|png|gif|txt)(?:[?#][^\u4e00-\u9fff]*)?', path, flags=re.I)
+        if file_end:
+            return path[file_end.end():]
+        prose = re.search(r'[\u4e00-\u9fff]', path)
+        return path[prose.start():] if prose else ""
+
+    text = re.sub(r'(?:https?://|www\.)[^\s<>\"\'（）【】《》，。；！？、]+', naked, text, flags=re.I)
+    # Drop labels whose sole value was a removed URL, not ordinary prose.
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r'[ \t]+', ' ', line).strip()
+        if line and not re.fullmatch(r'(?:原文|原文链接|链接|网址)\s*[:：]?', line):
+            lines.append(line)
+        elif not line:
+            lines.append("")
+    text = re.sub(r'\n{3,}', '\n\n', "\n".join(lines)).strip()
+    return text, changed
+
+
 def render_body(notice, content, max_bytes=None):
-    prefix = notice.title + "\n发布日期：" + notice.date + "\n\n"
+    title, title_had_links = remove_web_urls(notice.title)
+    prefix = (title or "通知") + "\n发布日期：" + notice.date + "\n\n"
     text = content["text"]
     image_note = "原文含 %d 张图片，图片内容未识别，请打开原文查看。" % content.get("images", 0) if content.get("images") else ""
     if image_note and text.endswith(image_note):
         text = text[:-len(image_note)].rstrip()
-    tail = ("\n\n" + image_note if image_note else "") + "\n\n原文：" + notice.url + "\n" + FOOTER
+    text, had_links = remove_web_urls(text)
+    link_note = "正文中的链接与附件请在原文查看。" if had_links or title_had_links else ""
+    notes = [note for note in (image_note, link_note) if note]
+    tail = ("\n\n" + "\n".join(notes) if notes else "") + "\n\n点击通知查看原文。\n" + FOOTER
     body = prefix + text + tail
     if max_bytes is None or len(body.encode("utf-8")) <= max_bytes:
         return body

@@ -56,7 +56,8 @@ class DeliveryScopeTests(unittest.TestCase):
             encoded = call.call_args.kwargs['data']
             payload = json.loads(encoded)
             self.assertLessEqual(len(encoded), 3500)
-            self.assertTrue(payload['body'].endswith('原文：' + n.url + '\n' + FOOTER))
+            self.assertTrue(payload['body'].endswith('点击通知查看原文。\n' + FOOTER))
+            self.assertNotIn(n.url, payload['body'])
             self.assertIn('正文已节选', payload['body'])
             self.assertEqual(payload['url'], n.url)
 
