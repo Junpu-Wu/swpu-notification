@@ -6,7 +6,7 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.10', '3.12']
-        monitor: [sgy, gs]
+        monitor: [sgy, gs, bgw]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

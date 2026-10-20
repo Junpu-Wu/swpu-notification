@@ -1,0 +1,37 @@
+{
+  "page_url": "https://www.swpu.edu.cn/bgw/zytzgg.htm",
+  "interval_min_seconds": 1800,
+  "interval_max_seconds": 3600,
+  "ai": {
+    "enabled": false,
+    "model": "deepseek-flash",
+    "key_file": "/path/to/private/deepseek.key",
+    "timeout_seconds": 30
+  },
+  "delivery_allowlist": [
+    "my-iphone"
+  ],
+  "targets": [
+    {
+      "id": "my-iphone",
+      "type": "bark",
+      "enabled": false,
+      "server": "https://api.day.app",
+      "key_file": "/path/to/private/my-iphone.key"
+    },
+    {
+      "id": "classmate-android",
+      "type": "ntfy",
+      "enabled": false,
+      "server": "https://ntfy.sh",
+      "topic_file": "/path/to/private/classmate-android.topic"
+    },
+    {
+      "id": "my-wxpusher",
+      "type": "wxpusher",
+      "enabled": false,
+      "server": "https://wxpusher.zjiecode.com",
+      "spt_file": "/path/to/private/my-wxpusher.spt"
+    }
+  ]
+}
