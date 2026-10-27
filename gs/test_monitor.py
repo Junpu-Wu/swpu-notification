@@ -24,6 +24,11 @@ title="动态文章">动态文章</a></td><td><span class="timestyle200922">2026
 
 
 class MonitorTests(unittest.TestCase):
+    def setUp(self):
+        clock = mock.patch.object(monitor, 'today', return_value=monitor.dt.date(2026, 10, 20))
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def test_real_page_shapes_and_pagination(self):
         rows, following = monitor.parse_page(HTML, monitor.PAGE_URL)
         self.assertEqual([n.uid for n in rows], ["gs:1088:8700", "gs:1088:8730"])
@@ -62,9 +67,9 @@ class MonitorTests(unittest.TestCase):
             target = {"id": "phone", "type": "bark", "enabled": True,
                       "server": "https://api.day.app", "key_file": "/unused"}
             cfg = {"interval_min_seconds": 1800, "interval_max_seconds": 3600}
-            old = monitor.Notice("gs:1088:1", "旧", "2026-10-01",
+            old = monitor.Notice("gs:1088:1", "旧", "2026-10-19",
                                  "https://www.swpu.edu.cn/gs/info/1088/1.htm")
-            new = monitor.Notice("gs:1088:2", "新", "2026-10-02",
+            new = monitor.Notice("gs:1088:2", "新", "2026-10-20",
                                  "https://www.swpu.edu.cn/gs/info/1088/2.htm")
             with monitor.contextlib.closing(monitor.connect(db)) as con:
                 monitor.ingest(con, [old], baseline=True)

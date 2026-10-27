@@ -27,6 +27,11 @@ def notice_row(href, date="2026-10-19", title="公告"):
 
 
 class MonitorTests(unittest.TestCase):
+    def setUp(self):
+        clock = mock.patch.object(monitor, 'today', return_value=monitor.dt.date(2026, 10, 20))
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def test_real_page_shapes_deduplication_and_pagination(self):
         rows, following = monitor.parse_page(HTML, monitor.PAGE_URL)
         self.assertEqual([n.uid for n in rows], ["bgw:1312:42168", "bgw:1312:45878", "bgw:1312:45848"])
@@ -153,8 +158,8 @@ class MonitorTests(unittest.TestCase):
             db = Path(tmp) / "state.sqlite3"
             target = {"id": "phone", "type": "bark", "enabled": True, "server": "https://api.day.app", "key_file": "/unused"}
             cfg = {"interval_min_seconds": 1800, "interval_max_seconds": 3600}
-            old = monitor.Notice("bgw:1312:1", "旧", "2026-10-01", "https://www.swpu.edu.cn/info/1312/1.htm")
-            new = monitor.Notice("bgw:1312:2", "新", "2026-10-02", "https://www.swpu.edu.cn/info/1312/2.htm")
+            old = monitor.Notice("bgw:1312:1", "旧", "2026-10-19", "https://www.swpu.edu.cn/info/1312/1.htm")
+            new = monitor.Notice("bgw:1312:2", "新", "2026-10-20", "https://www.swpu.edu.cn/info/1312/2.htm")
             with monitor.contextlib.closing(monitor.connect(db)) as con:
                 monitor.ingest(con, [old], baseline=True)
                 monitor.ingest(con, [new])
@@ -184,7 +189,7 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(con.execute("SELECT count(*) FROM notices WHERE is_new=1").fetchone()[0], 2)
             self.assertFalse(monitor.meta(con, "recovery_cursor"))
 
-    def test_failed_older_page_recovery_cursor_survives_restart(self):
+    def test_failed_older_page_exposes_no_partial_batch_and_retries_from_homepage(self):
         pin = monitor.Notice("bgw:1312:1", "旧置顶", "2026-06-16", "https://www.swpu.edu.cn/info/1312/1.htm")
         old = monitor.Notice("bgw:1312:2", "旧末尾", "2026-09-01", "https://www.swpu.edu.cn/info/1312/2.htm")
         latest = monitor.Notice("bgw:1312:5", "最新", "2026-10-19", "https://www.swpu.edu.cn/info/1312/5.htm")
@@ -197,7 +202,8 @@ class MonitorTests(unittest.TestCase):
                 with mock.patch.object(monitor, "fetch_page", side_effect=[([pin, latest], next_page), OSError("offline")]):
                     with self.assertRaises(OSError):
                         monitor.poll(con)
-                self.assertEqual(monitor.meta(con, "recovery_cursor"), next_page)
+                self.assertFalse(monitor.meta(con, "recovery_cursor"))
+                self.assertIsNone(con.execute("SELECT uid FROM notices WHERE uid=?", (latest.uid,)).fetchone())
             with monitor.contextlib.closing(monitor.connect(db)) as con:
                 # The current homepage now overlaps, but the saved cursor remains.
                 with mock.patch.object(monitor, "fetch_page", side_effect=[([pin, latest], next_page), ([missing, old], None)]) as fetch:

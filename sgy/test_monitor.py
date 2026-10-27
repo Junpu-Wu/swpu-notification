@@ -31,6 +31,9 @@ def page(ids, next_page=None, jsp=False):
 
 class MonitorTests(unittest.TestCase):
     def setUp(self):
+        clock = patch.object(m, 'today', return_value=m.dt.date(2026, 10, 14))
+        clock.start()
+        self.addCleanup(clock.stop)
         self.content_patch = patch.object(m, "prepare_content", return_value={"text": "模拟正文", "status": "fallback", "reason": "test", "images": 0})
         self.content_patch.start()
         self.addCleanup(self.content_patch.stop)
@@ -87,13 +90,14 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT count(*) FROM notices WHERE is_new=1").fetchone()[0], 4)
         self.assertFalse(m.meta(self.db, "recovery_cursor"))
 
-    def test_failed_older_page_keeps_cursor_and_new_notice(self):
+    def test_failed_older_page_discards_partial_batch_before_retry(self):
         m.ingest(self.db, self.rows([100]), baseline=True)
         cursor = "https://www.swpu.edu.cn/sgy/tzgg/25.htm"
         with patch.object(m, "fetch_page", side_effect=[(self.rows([103]), cursor), TimeoutError]):
             with self.assertRaises(TimeoutError):
                 m.poll(self.db)
-        self.assertEqual(m.meta(self.db, "recovery_cursor"), cursor)
+        self.assertFalse(m.meta(self.db, "recovery_cursor"))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM notices WHERE is_new=1").fetchone()[0], 0)
         with patch.object(m, "fetch_page", side_effect=[(self.rows([103]), cursor), (self.rows([102, 101, 100]), None)]):
             m.poll(self.db)
         self.assertEqual(self.db.execute("SELECT count(*) FROM notices WHERE is_new=1").fetchone()[0], 3)
@@ -118,6 +122,7 @@ class MonitorTests(unittest.TestCase):
         states = dict(self.db.execute("SELECT target,state FROM deliveries"))
         self.assertEqual(states, {"me": "pending", "friend": "accepted"})
         self.db.execute("UPDATE deliveries SET next_attempt=0 WHERE target='me'")
+        self.db.execute("UPDATE delivery_attempt_log SET attempted_at=attempted_at-61")
         self.db.commit()
         with patch.object(m, "send_push") as send:
             self.assertTrue(m.deliver_one(self.db, targets, self.cfg))

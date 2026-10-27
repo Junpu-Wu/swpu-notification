@@ -9,6 +9,11 @@ from ai_content import FOOTER
 
 
 class DeliveryScopeTests(unittest.TestCase):
+    def setUp(self):
+        clock = patch.object(m, 'today', return_value=m.dt.date(2026, 10, 20))
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def test_existing_pending_and_new_queue_obey_scope_and_since(self):
         with tempfile.TemporaryDirectory() as tmp:
             con = m.connect(Path(tmp) / 'state.sqlite3')

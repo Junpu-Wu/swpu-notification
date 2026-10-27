@@ -156,6 +156,13 @@ def load_config(path):
             if (not isinstance(allowlist, list) or any(not isinstance(i, str) for i in allowlist)
                     or len(set(allowlist)) != len(allowlist) or not set(allowlist) <= ids):
                 raise MonitorError("invalid_delivery_allowlist")
+        expected = cfg.get("expected_delivery_targets")
+        if expected is not None:
+            if (not isinstance(expected, list) or not expected
+                    or any(not isinstance(i, str) for i in expected)
+                    or len(set(expected)) != len(expected)
+                    or set(expected) != {t["id"] for t in allowed_targets(cfg)}):
+                raise MonitorError("delivery_target_set_mismatch")
         validate_ai_config(cfg)
         return cfg
     except MonitorError:
@@ -242,6 +249,14 @@ def connect(db_path):
             next_attempt REAL NOT NULL DEFAULT 0, last_error TEXT,
             accepted_at REAL, PRIMARY KEY(uid, target));
     """)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS safety_quarantine(
+            uid TEXT PRIMARY KEY, reason TEXT NOT NULL, created_at REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS delivery_attempt_log(
+            id INTEGER PRIMARY KEY, target TEXT NOT NULL, uid TEXT NOT NULL,
+            attempted_at REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS attempt_target_time ON delivery_attempt_log(target,attempted_at);
+    """)
     return con
 
 
@@ -254,54 +269,118 @@ def set_meta(con, key, value):
     con.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)", (key, str(value)))
 
 
-def ingest(con, notices, baseline=False):
-    added = 0
+SAFETY_VERSION = "1"
+MAX_CANDIDATES = 5
+MAX_PAGES = 3
+MAX_AGE_DAYS = 3
+MAX_PENDING_ARTICLES = 10
+MAX_ATTEMPTS = 5
+TARGET_GAP_SECONDS = 60
+TARGET_HOURLY_ATTEMPTS = 6
+CST = dt.timezone(dt.timedelta(hours=8))
+
+
+def today():
+    return dt.datetime.fromtimestamp(time.time(), CST).date()
+
+
+def valid_date(value):
+    try:
+        return dt.date.fromisoformat(value).isoformat() == value
+    except (TypeError, ValueError):
+        return False
+
+
+def ensure_safety(con):
+    if meta(con, "safety_version") == SAFETY_VERSION:
+        return
+    # Upgrade before starting the worker. Legacy pending work is never approved
+    # implicitly; retain it as evidence instead of replaying it on deployment.
+    with con:
+        con.execute("""INSERT OR IGNORE INTO safety_quarantine(uid,reason,created_at)
+            SELECT uid,'pre_upgrade_pending',? FROM deliveries WHERE state='pending'""", (time.time(),))
+        con.execute("UPDATE deliveries SET state='quarantined',last_error='pre_upgrade_pending' WHERE state='pending'")
+        con.execute("UPDATE notices SET is_new=0")
+        dates = [r[0] for r in con.execute("SELECT date FROM notices")
+                 if valid_date(r[0]) and r[0] <= today().isoformat()]
+        set_meta(con, "publication_watermark", max(dates, default=""))
+        set_meta(con, "recovery_cursor", "")
+        set_meta(con, "safety_installed_at", time.time())
+        set_meta(con, "safety_version", SAFETY_VERSION)
+
+
+def quarantine(con, uids, reason):
+    for uid in set(uids):
+        con.execute("INSERT OR IGNORE INTO safety_quarantine VALUES(?,?,?)", (uid, reason, time.time()))
+        con.execute("UPDATE notices SET is_new=0 WHERE uid=?", (uid,))
+        con.execute("UPDATE deliveries SET state='quarantined',last_error=? WHERE uid=? AND state='pending'", (reason, uid))
+
+
+def ingest(con, notices, baseline=False, *, quarantine_reason=None):
+    ensure_safety(con)
+    known = {r[0] for r in con.execute("SELECT uid FROM notices")}
+    unseen = {n.uid: n for n in notices if n.uid not in known}
+    watermark = meta(con, "publication_watermark") or ""
+    floor = max(watermark, (today() - dt.timedelta(days=MAX_AGE_DAYS)).isoformat())
+    candidates = [n for n in unseen.values() if valid_date(n.date) and floor <= n.date <= today().isoformat()]
+    invalid = [n for n in unseen.values() if not valid_date(n.date) or n.date > today().isoformat()]
+    reason = quarantine_reason or ("invalid_or_future_date" if invalid else None)
+    if not baseline and len(candidates) > MAX_CANDIDATES:
+        reason = reason or "candidate_batch_limit"
+    reason = reason or meta(con, "delivery_pause_reason") or None
+    candidate_ids = {n.uid for n in candidates} if not baseline and not reason else set()
     now = time.time()
     with con:
-        for n in notices:
-            cur = con.execute("INSERT OR IGNORE INTO notices VALUES(?,?,?,?,?,?)",
-                              (n.uid, n.title, n.date, n.url, now, int(not baseline)))
-            added += cur.rowcount
+        for n in unseen.values():
+            con.execute("INSERT OR IGNORE INTO notices VALUES(?,?,?,?,?,?)",
+                        (n.uid, n.title, n.date, n.url, now, int(n.uid in candidate_ids)))
+        if reason:
+            quarantine(con, [n.uid for n in candidates + invalid], reason)
+            set_meta(con, "delivery_pause_reason", reason)
+        dates = [n.date for n in notices if valid_date(n.date) and n.date <= today().isoformat()]
+        set_meta(con, "publication_watermark", max([watermark, *dates]))
         if baseline:
             set_meta(con, "baseline_at", now)
-    return added
+    return len(unseen)
 
 
 def poll(con):
+    ensure_safety(con)
     started = time.monotonic()
-    now = time.time()
     with con:
-        set_meta(con, "last_attempt_at", now)
+        set_meta(con, "last_attempt_at", time.time())
     rows, next_page = fetch_page(PAGE_URL)
     if meta(con, "baseline_at") is None:
         count = ingest(con, rows, baseline=True)
         LOG.info("baseline_saved count=%d old_notices_not_sent=true", count)
     else:
-        count = 0
-        # If the entire first page is new, follow pages until a known article.
-        # A pending recovery cursor survives a restart or a failed older-page fetch.
         known = {r[0] for r in con.execute("SELECT uid FROM notices")}
-        overlap = any(n.uid in known for n in rows)
-        count += ingest(con, rows)
-        cursor = meta(con, "recovery_cursor") or (next_page if not overlap else None)
-        with con:
-            set_meta(con, "recovery_cursor", cursor or "")
-        scanned = set()
-        while cursor and cursor not in scanned and time.monotonic() - started < 15:
-            scanned.add(cursor)
+        watermark = meta(con, "publication_watermark") or ""
+        floor = max(watermark, (today() - dt.timedelta(days=MAX_AGE_DAYS)).isoformat())
+        batch, page_rows, scanned = list(rows), rows, {PAGE_URL}
+        reason = None
+        # Stage the complete bounded batch before any INSERT. A failed page
+        # fetch cannot expose half a batch to the independent delivery thread.
+        while next_page:
+            overlap = any(n.uid in known and n.date >= floor for n in page_rows)
+            dates = [n.date for n in page_rows if valid_date(n.date)]
+            if overlap or (dates and max(dates) < floor):
+                break
+            if next_page in scanned or len(scanned) >= MAX_PAGES or time.monotonic() - started >= 15:
+                reason = "archive_scan_limit"
+                break
+            scanned.add(next_page)
             remaining = max(1, min(10, 20 - (time.monotonic() - started)))
-            older, following = fetch_page(cursor, timeout=remaining)
-            overlap = any(n.uid in known for n in older)
-            count += ingest(con, older)
-            cursor = None if overlap else following
-            with con:
-                set_meta(con, "recovery_cursor", cursor or "")
-        if cursor:
-            LOG.info("older_pages_recovery_pending=true")
-        LOG.info("check_ok first_page_count=%d new_count=%d", len(rows), count)
+            page_rows, next_page = fetch_page(next_page, timeout=remaining)
+            batch.extend(page_rows)
+        count = ingest(con, batch, quarantine_reason=reason)
+        LOG.info("check_ok first_page_count=%d stored_count=%d scanned_pages=%d", len(rows), count, len(scanned))
     with con:
+        set_meta(con, "recovery_cursor", "")
         set_meta(con, "last_success_at", time.time())
-        set_meta(con, "last_error", "")
+        set_meta(con, "last_error", meta(con, "delivery_pause_reason") or "")
+    if meta(con, "delivery_pause_reason"):
+        LOG.error("delivery_safety_paused reason=%s", meta(con, "delivery_pause_reason"))
 
 
 def restrict_targets(targets, cfg):
@@ -382,28 +461,56 @@ def send_push(target, notice, *, test=False, content=None, cfg=None):
 
 
 def queue_targets(con, targets):
+    ensure_safety(con)
+    if meta(con, "delivery_pause_reason"):
+        return
     with con:
+        # Expired pending work remains auditable but can no longer drain after
+        # a long outage. Classification and dispatch use the same age boundary.
+        expired = [r[0] for r in con.execute("SELECT uid FROM notices WHERE is_new=1 AND date<?",
+                   ((today() - dt.timedelta(days=MAX_AGE_DAYS)).isoformat(),))]
+        quarantine(con, expired, "delivery_window_expired")
         for target in targets:
             con.execute("""INSERT OR IGNORE INTO deliveries(uid,target)
                 SELECT uid,? FROM notices WHERE is_new=1 AND first_seen>=?""",
                         (target["id"], target.get("since", 0)))
+        pending = [r[0] for r in con.execute("SELECT DISTINCT uid FROM deliveries WHERE state='pending'")]
+        if len(pending) > MAX_PENDING_ARTICLES:
+            quarantine(con, pending, "pending_article_limit")
+            set_meta(con, "delivery_pause_reason", "pending_article_limit")
+
+
+def rate_allowed_targets(con, targets):
+    now = time.time()
+    return [t for t in targets if con.execute("""SELECT count(*) FROM delivery_attempt_log
+        WHERE target=? AND attempted_at>?""", (t["id"], now - 3600)).fetchone()[0] < TARGET_HOURLY_ATTEMPTS
+        and not con.execute("SELECT 1 FROM delivery_attempt_log WHERE target=? AND attempted_at>? LIMIT 1",
+                            (t["id"], now - TARGET_GAP_SECONDS)).fetchone()]
 
 
 def deliver_one(con, targets, cfg):
     targets = restrict_targets(targets, cfg)
     queue_targets(con, targets)
+    if meta(con, "delivery_pause_reason"):
+        return False
+    targets = rate_allowed_targets(con, targets)
     by_id = {t["id"]: t for t in targets}
     if not by_id:
         return False
     marks = ",".join("?" for _ in by_id)
     row = con.execute("""SELECT d.*,n.title,n.date,n.url FROM deliveries d
-        JOIN notices n USING(uid) WHERE d.state='pending' AND d.next_attempt<=?
+        JOIN notices n USING(uid) WHERE d.state='pending' AND n.is_new=1 AND d.attempts<5 AND d.next_attempt<=?
         AND d.target IN (""" + marks + ") AND (" + " OR ".join(
             "(d.target=? AND n.first_seen>=?)" for _ in by_id) + ") ORDER BY d.next_attempt,n.first_seen LIMIT 1",
         (time.time(), *by_id, *(value for t in by_id.values() for value in (t["id"], t.get("since", 0))))).fetchone()
     if row is None:
         return False
     n = Notice(row["uid"], row["title"], row["date"], row["url"])
+    # Persist the reservation before any provider or AI request. Restarting
+    # cannot reset rate limits, including ambiguous/failed HTTP requests.
+    with con:
+        con.execute("INSERT INTO delivery_attempt_log(target,uid,attempted_at) VALUES(?,?,?)",
+                    (row["target"], n.uid, time.time()))
     try:
         content = prepare_content(con, n, cfg, http_read, read_secret)
         LOG.info("article_content article=%s mode=%s reason=%s", n.uid, content["status"], content["reason"])
@@ -414,6 +521,9 @@ def deliver_one(con, targets, cfg):
             con.execute("""UPDATE deliveries SET attempts=attempts+1,last_error=?,
                 next_attempt=? WHERE uid=? AND target=?""",
                 (code, time.time() + RNG.randint(30, 180), n.uid, row["target"]))
+            if row["attempts"] + 1 >= MAX_ATTEMPTS:
+                con.execute("UPDATE deliveries SET state='quarantined',last_error='retry_limit' WHERE uid=? AND target=?",
+                            (n.uid, row["target"]))
         LOG.warning("push_retry target=%s article=%s reason=%s", row["target"], n.uid, code)
     else:
         with con:
@@ -434,7 +544,7 @@ def delivery_worker(config_path, db_path, stop):
             except Exception as exc:
                 LOG.error("delivery_worker_error reason=%s", safe_error(exc))
                 active = False
-            stop.wait(0.1 if active else 2)
+            stop.wait(2)
 
 
 def status(db_path, cfg):
@@ -449,6 +559,11 @@ def status(db_path, cfg):
                   "ai_model": cfg.get("ai", {}).get("model") if cfg.get("ai", {}).get("enabled") else None,
                   "notice_count": con.execute("SELECT count(*) FROM notices").fetchone()[0],
                   "new_notice_count": con.execute("SELECT count(*) FROM notices WHERE is_new=1").fetchone()[0],
+                  "safety_version": meta(con, "safety_version"),
+                  "delivery_pause_reason": meta(con, "delivery_pause_reason"),
+                  "publication_watermark": meta(con, "publication_watermark"),
+                  "quarantined_notices": con.execute("SELECT count(*) FROM safety_quarantine").fetchone()[0],
+                  "expected_delivery_targets": cfg.get("expected_delivery_targets"),
                   "deliveries": {r[0]: r[1] for r in con.execute("SELECT state,count(*) FROM deliveries GROUP BY state")}}
         for key in ("baseline_at", "last_attempt_at", "last_success_at", "next_check_at", "last_error"):
             value = meta(con, key)
@@ -504,6 +619,7 @@ def main():
             for sig in (signal.SIGTERM, signal.SIGINT):
                 signal.signal(sig, lambda *_: stop.set())
             with contextlib.closing(connect(db_path)) as con:
+                ensure_safety(con)
                 if not args.once:
                     threading.Thread(target=delivery_worker,
                                      args=(args.config, db_path, stop), daemon=True).start()
